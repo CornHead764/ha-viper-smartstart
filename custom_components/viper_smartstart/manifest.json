@@ -1,0 +1,11 @@
+{
+  "domain": "viper_smartstart",
+  "name": "Viper SmartStart",
+  "codeowners": ["@CornHead764"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/CornHead764/ha-viper-smartstart",
+  "iot_class": "cloud_polling",
+  "requirements": ["aiohttp>=3.8.0"],
+  "version": "1.1.2"
+}

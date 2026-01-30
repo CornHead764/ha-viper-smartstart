@@ -1,0 +1,83 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Viper SmartStart Login",
+        "description": "Enter your Viper SmartStart credentials.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "vehicles": {
+        "title": "Select Vehicles",
+        "description": "Select the vehicles you want to add to Home Assistant and set the refresh interval. Note: Viper API has a 5,000 call/year limit.",
+        "data": {
+          "vehicles": "Vehicles",
+          "refresh_interval": "Refresh Interval (seconds)"
+        },
+        "data_description": {
+          "refresh_interval": "How often to poll for vehicle status updates. Set to 0 to disable automatic polling (recommended to conserve API calls). Status will still refresh after remote start commands."
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Viper SmartStart",
+        "description": "Your session has expired. Please enter your password for {username}.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid username or password",
+      "cannot_connect": "Unable to connect to Viper SmartStart API",
+      "no_vehicles": "No vehicles found in your account",
+      "no_vehicles_selected": "Please select at least one vehicle",
+      "unknown": "An unexpected error occurred. Check Home Assistant logs for details."
+    },
+    "abort": {
+      "already_configured": "This account is already configured",
+      "reauth_successful": "Re-authentication successful"
+    }
+  },
+  "services": {
+    "refresh": {
+      "name": "Refresh",
+      "description": "Refresh all vehicle status data immediately."
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "doors_open": {
+        "name": "Doors Open"
+      },
+      "ignition_on": {
+        "name": "Ignition"
+      },
+      "trunk_open": {
+        "name": "Trunk Open"
+      },
+      "hood_open": {
+        "name": "Hood Open"
+      }
+    },
+    "sensor": {
+      "battery_voltage": {
+        "name": "Battery Voltage"
+      }
+    },
+    "button": {
+      "lock": {
+        "name": "Lock"
+      },
+      "unlock": {
+        "name": "Unlock"
+      }
+    },
+    "switch": {
+      "remote_start": {
+        "name": "Remote Start"
+      }
+    }
+  }
+}
