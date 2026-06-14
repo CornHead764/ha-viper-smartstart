@@ -7,9 +7,10 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import ViperApi
+from .api import ViperApi, ViperApiError, ViperAuthError
 from .const import DOMAIN, SERVICE_REFRESH
 from .coordinator import ViperCoordinator
 
@@ -34,7 +35,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     # Authenticate
-    await api.authenticate()
+    try:
+        await api.authenticate()
+    except ViperAuthError as err:
+        raise ConfigEntryAuthFailed from err
+    except ViperApiError as err:
+        raise ConfigEntryNotReady from err
 
     # Create coordinator
     coordinator = ViperCoordinator(hass, api, entry)

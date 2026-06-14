@@ -1,7 +1,5 @@
 {
   "name": "Viper SmartStart",
   "homeassistant": "2024.1.0",
-  "render_readme": true,
-  "zip_release": true,
-  "filename": "viper_smartstart.zip"
+  "render_readme": true
 }

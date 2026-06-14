@@ -44,11 +44,6 @@ BUTTONS: tuple[ViperButtonEntityDescription, ...] = (
 )
 
 
-@dataclass(frozen=True, kw_only=True)
-class ViperRefreshButtonEntityDescription(ButtonEntityDescription):
-    """Describes a Viper refresh button entity."""
-
-
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,

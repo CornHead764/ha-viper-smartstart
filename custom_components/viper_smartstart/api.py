@@ -208,10 +208,29 @@ class ViperApi:
         _LOGGER.debug("Active result for %s: %s", device_id, active_result)
         _LOGGER.debug("Current result for %s: %s", device_id, current_result)
 
+        active_ok = not isinstance(active_result, Exception) and active_result is not None
+        current_ok = (
+            not isinstance(current_result, Exception) and current_result is not None
+        )
+
+        # If both status reads failed, surface the error instead of silently
+        # returning an empty status. Swallowing it would wipe good state to
+        # "unknown" and, on token expiry, never trigger re-authentication.
+        if not active_ok and not current_ok:
+            for result in (active_result, current_result):
+                if isinstance(result, ViperAuthError):
+                    raise result
+            for result in (active_result, current_result):
+                if isinstance(result, Exception):
+                    raise ViperApiError(
+                        f"Failed to read status for {device_id}: {result}"
+                    ) from result
+            raise ViperApiError(f"No status returned for {device_id}")
+
         status = VehicleStatus()
 
         # Process active status (GPS, door state, ignition, etc.)
-        if not isinstance(active_result, Exception) and active_result is not None:
+        if active_ok:
             active_data = active_result.get("results", {}).get("device", {})
             active_status = active_data.get("deviceStatus", {})
 
@@ -248,7 +267,7 @@ class ViperApi:
             _LOGGER.warning("Failed to get active status: %s", active_result)
 
         # Process current status (remote starter, security system, etc.)
-        if not isinstance(current_result, Exception) and current_result is not None:
+        if current_ok:
             current_data = current_result.get("results", {}).get("device", {})
             current_status = current_data.get("deviceStatus", {})
 
