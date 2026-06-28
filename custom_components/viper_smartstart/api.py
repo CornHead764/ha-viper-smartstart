@@ -156,7 +156,7 @@ class ViperApi:
                     raise ViperApiError(f"API error: {response.status}")
 
                 data = await response.json()
-                devices = data.get("results", {}).get("devices", [])
+                devices = (data.get("results") or {}).get("devices") or []
 
                 vehicles = []
                 for device in devices:
@@ -231,8 +231,11 @@ class ViperApi:
 
         # Process active status (GPS, door state, ignition, etc.)
         if active_ok:
-            active_data = active_result.get("results", {}).get("device", {})
-            active_status = active_data.get("deviceStatus", {})
+            # The API can return ``{"results": null}`` (or null at the device /
+            # deviceStatus level) when no live data is available. ``.get(k, {})``
+            # would return that null, not the default, so guard each level.
+            active_data = (active_result.get("results") or {}).get("device") or {}
+            active_status = active_data.get("deviceStatus") or {}
 
             # Parse latitude/longitude
             lat = active_data.get("latitude")
@@ -268,8 +271,8 @@ class ViperApi:
 
         # Process current status (remote starter, security system, etc.)
         if current_ok:
-            current_data = current_result.get("results", {}).get("device", {})
-            current_status = current_data.get("deviceStatus", {})
+            current_data = (current_result.get("results") or {}).get("device") or {}
+            current_status = current_data.get("deviceStatus") or {}
 
             if current_status.get("doorsLocked") is not None:
                 status.doors_locked = bool(current_status.get("doorsLocked"))
