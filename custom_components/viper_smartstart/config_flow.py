@@ -10,6 +10,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import (
     ConfigEntry,
+    ConfigEntryState,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
@@ -218,7 +219,15 @@ class ViperSmartStartConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_PASSWORD: user_input[CONF_PASSWORD],
                         },
                     )
-                    await self.hass.config_entries.async_reload(entry.entry_id)
+                    # When the entry is LOADED, async_update_entry fires the
+                    # options update listener registered in async_setup_entry,
+                    # which reloads it — so reloading here too would double up.
+                    # But that listener is only registered after setup fully
+                    # succeeds; if setup failed with ConfigEntryAuthFailed the
+                    # entry is not LOADED and nothing else will reload it, so we
+                    # must do it explicitly.
+                    if entry.state is not ConfigEntryState.LOADED:
+                        await self.hass.config_entries.async_reload(entry.entry_id)
                     return self.async_abort(reason="reauth_successful")
 
             except ViperAuthError:

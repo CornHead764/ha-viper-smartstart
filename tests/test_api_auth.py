@@ -170,7 +170,10 @@ class ExpirationParsingTest(unittest.TestCase):
 
     def test_iso_naive_string_assumed_utc(self):
         parsed = self.client._parse_expiration("2030-01-02T03:04:05")
-        self.assertEqual(parsed.tzinfo, timezone.utc)
+        self.assertEqual(
+            parsed,
+            datetime(2030, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
+        )
 
     def test_garbage_string_returns_none(self):
         self.assertIsNone(self.client._parse_expiration("not-a-date"))
@@ -319,6 +322,16 @@ class AuthenticateErrorTest(unittest.TestCase):
         with self.assertRaises(ViperApiError):
             asyncio.run(client.authenticate())
 
+    def test_malformed_200_body_raises_api_error_not_auth(self):
+        # A 200 whose body lacks results.authToken is a server anomaly, not a
+        # credential rejection, so it must NOT escalate to HA's reauth prompt.
+        session = _RecordingSession(
+            login_response=_FakeResponse(200, {"results": {}})
+        )
+        client = ViperApi("user", "pass", session=session)
+        with self.assertRaises(ViperApiError):
+            asyncio.run(client.authenticate())
+
     def test_successful_login_parses_expiration(self):
         session = _RecordingSession(
             login_response=_FakeResponse(200, _login_payload("2030-01-02T03:04:05Z"))
@@ -330,6 +343,123 @@ class AuthenticateErrorTest(unittest.TestCase):
             client._token_expires_at,
             datetime(2030, 1, 2, 3, 4, 5, tzinfo=timezone.utc),
         )
+
+
+class EmptyBodyTest(unittest.TestCase):
+    def test_command_200_null_body_raises_api_error(self):
+        session = _RecordingSession(
+            command_responses=[_FakeResponse(200, None)]
+        )
+        client = ViperApi("user", "pass", session=session)
+        client._access_token = "good"
+        client._token_expires_at = _future()
+
+        with self.assertRaises(ViperApiError):
+            asyncio.run(client._send_command("dev", const.CMD_REMOTE))
+
+        # No spurious re-login: a null body is not a 401.
+        self.assertEqual(session.login_calls, 0)
+        self.assertEqual(session.command_calls, 1)
+
+    def test_get_vehicles_200_null_body_raises_api_error(self):
+        session = _RecordingSession(
+            get_responses=[_FakeResponse(200, None)]
+        )
+        client = ViperApi("user", "pass", session=session)
+        client._access_token = "good"
+        client._token_expires_at = _future()
+
+        with self.assertRaises(ViperApiError):
+            asyncio.run(client.get_vehicles())
+
+        self.assertEqual(session.login_calls, 0)
+        self.assertEqual(session.get_calls, 1)
+
+
+class _TokenAwareSession:
+    """Fake session whose 401/200 decision is keyed on the Bearer token.
+
+    Requests carrying the stale token get 401; requests carrying the fresh
+    token (issued by the login POST) get 200. A login POST also blocks on an
+    event so two concurrent callers deterministically both reach their first
+    401 before either re-authenticates.
+    """
+
+    def __init__(self, stale_token: str, fresh_token: str) -> None:
+        self.stale_token = stale_token
+        self.fresh_token = fresh_token
+        self.login_calls = 0
+        self.command_calls = 0
+        self._both_issued = asyncio.Event()
+        self._issued_count = 0
+        self._expected_first_issues = 2
+
+    def _bearer(self, kwargs) -> str | None:
+        headers = kwargs.get("headers") or {}
+        auth = headers.get("Authorization", "")
+        return auth[len("Bearer "):] if auth.startswith("Bearer ") else None
+
+    def post(self, url, *args, **kwargs):
+        if url == const.API_LOGIN_URL:
+            self.login_calls += 1
+            payload = _login_payload()
+            payload["results"]["authToken"]["accessToken"] = self.fresh_token
+            return _FakeCtx(_FakeResponse(200, payload))
+        if url == const.API_COMMAND_URL:
+            self.command_calls += 1
+            token = self._bearer(kwargs)
+            return _DeferredCtx(self, token)
+        raise AssertionError(f"Unexpected POST url: {url}")
+
+
+class _DeferredCtx:
+    """Command context that gates the first round of requests on a barrier.
+
+    On the first attempt (stale token) it waits until BOTH concurrent callers
+    have issued, guaranteeing they each observe a 401 before either re-logs in.
+    """
+
+    def __init__(self, session: _TokenAwareSession, token: str | None) -> None:
+        self._session = session
+        self._token = token
+
+    async def __aenter__(self):
+        if self._token == self._session.stale_token:
+            self._session._issued_count += 1
+            if self._session._issued_count >= self._session._expected_first_issues:
+                self._session._both_issued.set()
+            await self._session._both_issued.wait()
+            return _FakeResponse(401, None)
+        if self._token == self._session.fresh_token:
+            return _FakeResponse(200, {"results": {"ok": True}})
+        return _FakeResponse(401, None)
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class ConcurrentReactiveReauthTest(unittest.TestCase):
+    def test_two_concurrent_401s_login_once(self):
+        session = _TokenAwareSession(stale_token="stale", fresh_token="fresh-token")
+        client = ViperApi("user", "pass", session=session)
+        client._access_token = "stale"
+        client._token_expires_at = _future()  # proactively valid; server rejects it
+
+        async def run():
+            return await asyncio.gather(
+                client._send_command("dev", const.CMD_READ_ACTIVE),
+                client._send_command("dev", const.CMD_READ_CURRENT),
+            )
+
+        results = asyncio.run(run())
+
+        # Exactly one login despite both requests hitting 401 concurrently.
+        self.assertEqual(session.login_calls, 1)
+        # 2 initial 401s + 2 successful retries.
+        self.assertEqual(session.command_calls, 4)
+        self.assertEqual(client._access_token, "fresh-token")
+        for result in results:
+            self.assertEqual(result, {"results": {"ok": True}})
 
 
 class CommandSuccessDetectionTest(unittest.TestCase):

@@ -199,11 +199,15 @@ class ViperApi:
                 auth_token = (data.get("results") or {}).get("authToken")
                 access_token = (auth_token or {}).get("accessToken")
                 if not access_token:
+                    # A 200 with a body missing the token is a server anomaly,
+                    # not a credential rejection (those are 401/403). Raise
+                    # ViperApiError so this does not escalate to HA's reauth
+                    # prompt.
                     _LOGGER.debug(
                         "Invalid auth response structure; top-level keys: %s",
                         list(data.keys()),
                     )
-                    raise ViperAuthError("Invalid authentication response")
+                    raise ViperApiError("Invalid authentication response")
 
                 self._access_token = access_token
                 self._token_expires_at = self._parse_expiration(
@@ -236,15 +240,27 @@ class ViperApi:
         session = await self._get_session()
 
         try:
+            # Snapshot the token we are about to use so that, on a 401, we can
+            # tell whether a concurrent caller has already refreshed it.
+            token_snapshot = self._access_token
             status, data = await self._issue(session, request_factory)
             if status == 401:
-                self._clear_token()
-                await self._ensure_authenticated()
+                # Serialize the reactive re-login: only clear and re-authenticate
+                # if the token is still the one we used (or was cleared). If a
+                # concurrent 401 handler already obtained a fresh token, reuse it
+                # rather than clobbering it and firing a redundant login.
+                async with self._auth_lock:
+                    if self._access_token is None or self._access_token == token_snapshot:
+                        await self.authenticate()
                 status, data = await self._issue(session, request_factory)
                 if status == 401:
                     raise ViperAuthError("Authentication rejected after re-login")
             if status != 200:
                 raise ViperApiError(f"{error_label}: {status}")
+            if data is None:
+                # A 200 with a null/empty JSON body; callers would crash on
+                # ``.get()``. Treat it as a server anomaly.
+                raise ViperApiError(f"{error_label}: empty response body")
             return data
         except aiohttp.ClientError as err:
             raise ViperApiError(f"Connection error: {err}") from err
