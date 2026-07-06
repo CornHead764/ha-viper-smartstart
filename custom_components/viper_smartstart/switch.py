@@ -7,10 +7,12 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from .api import ViperApiError, ViperAuthError
 from .const import DOMAIN
 from .coordinator import ViperCoordinator
 
@@ -50,16 +52,26 @@ class ViperRemoteStartSwitch(CoordinatorEntity[ViperCoordinator], SwitchEntity):
         self._vehicle_id = vehicle_id
         self._attr_unique_id = f"{vehicle_id}_remote_start"
         self._attr_device_info = coordinator.get_device_info(vehicle_id)
+        self._optimistic_is_on: bool | None = None
 
     @property
     def is_on(self) -> bool | None:
         """Return true if remote starter is active."""
+        if self._optimistic_is_on is not None:
+            return self._optimistic_is_on
         if self.coordinator.data is None:
             return None
         status = self.coordinator.data.get(self._vehicle_id)
         if status is None:
             return None
         return status.remote_starter_active
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        # Fresh data has landed; drop any optimistic state so we reflect reality.
+        self._optimistic_is_on = None
+        super()._handle_coordinator_update()
 
     @property
     def available(self) -> bool:
@@ -91,14 +103,25 @@ class ViperRemoteStartSwitch(CoordinatorEntity[ViperCoordinator], SwitchEntity):
                 return
 
         _LOGGER.debug("Sending remote start command to %s", self._vehicle_id)
-        success = await self.coordinator.api.remote_start(self._vehicle_id)
-        if success:
-            # Enable boosted polling to monitor remote start status
-            self.coordinator.start_boosted_polling()
-            # Refresh data after command with delay
-            self.coordinator.schedule_refresh_after_action()
-        else:
-            _LOGGER.warning("Remote start command failed for %s", self._vehicle_id)
+        try:
+            success = await self.coordinator.api.remote_start(self._vehicle_id)
+        except (ViperAuthError, ViperApiError) as err:
+            raise HomeAssistantError(
+                f"Failed to remote start {self._vehicle_id}: {err}"
+            ) from err
+
+        if not success:
+            raise HomeAssistantError(
+                f"Remote start command failed for {self._vehicle_id}"
+            )
+
+        # Show the switch as on immediately; the real state lands on next refresh.
+        self._optimistic_is_on = True
+        self.async_write_ha_state()
+        # Enable boosted polling to monitor remote start status
+        self.coordinator.start_boosted_polling()
+        # Refresh data after command with delay
+        self.coordinator.schedule_refresh_after_action()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn off remote start (stop the engine)."""
@@ -118,9 +141,20 @@ class ViperRemoteStartSwitch(CoordinatorEntity[ViperCoordinator], SwitchEntity):
 
         _LOGGER.debug("Sending remote stop command to %s", self._vehicle_id)
         # The 'remote' command toggles - sends same command to stop
-        success = await self.coordinator.api.remote_start(self._vehicle_id)
-        if success:
-            # Refresh data after command with delay
-            self.coordinator.schedule_refresh_after_action()
-        else:
-            _LOGGER.warning("Remote stop command failed for %s", self._vehicle_id)
+        try:
+            success = await self.coordinator.api.remote_start(self._vehicle_id)
+        except (ViperAuthError, ViperApiError) as err:
+            raise HomeAssistantError(
+                f"Failed to remote stop {self._vehicle_id}: {err}"
+            ) from err
+
+        if not success:
+            raise HomeAssistantError(
+                f"Remote stop command failed for {self._vehicle_id}"
+            )
+
+        # Show the switch as off immediately; the real state lands on next refresh.
+        self._optimistic_is_on = False
+        self.async_write_ha_state()
+        # Refresh data after command with delay
+        self.coordinator.schedule_refresh_after_action()

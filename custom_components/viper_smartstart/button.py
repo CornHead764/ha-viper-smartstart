@@ -9,10 +9,11 @@ import logging
 from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import ViperApi
+from .api import ViperApi, ViperApiError, ViperAuthError
 from .const import DOMAIN
 from .coordinator import ViperCoordinator
 
@@ -87,18 +88,22 @@ class ViperButton(CoordinatorEntity[ViperCoordinator], ButtonEntity):
             self.entity_description.key,
             self._vehicle_id,
         )
-        success = await self.entity_description.press_fn(
-            self.coordinator.api, self._vehicle_id
-        )
-        if success:
-            # Refresh data after command with delay
-            self.coordinator.schedule_refresh_after_action()
-        else:
-            _LOGGER.warning(
-                "Command %s failed for vehicle %s",
-                self.entity_description.key,
-                self._vehicle_id,
+        try:
+            success = await self.entity_description.press_fn(
+                self.coordinator.api, self._vehicle_id
             )
+        except (ViperAuthError, ViperApiError) as err:
+            raise HomeAssistantError(
+                f"Failed to {self.entity_description.key} {self._vehicle_id}: {err}"
+            ) from err
+
+        if not success:
+            raise HomeAssistantError(
+                f"Command {self.entity_description.key} failed for {self._vehicle_id}"
+            )
+
+        # Refresh data after command with delay
+        self.coordinator.schedule_refresh_after_action()
 
 
 class ViperRefreshButton(CoordinatorEntity[ViperCoordinator], ButtonEntity):
