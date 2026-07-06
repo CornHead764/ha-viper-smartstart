@@ -24,6 +24,10 @@ _LOGGER = logging.getLogger(__name__)
 # Boosted polling settings when remote start is active
 BOOSTED_INTERVAL = timedelta(seconds=60)
 BOOSTED_MAX_DURATION = timedelta(minutes=30)
+# Grace period to wait for the car to report an active remote start before
+# giving up and resetting boosted polling (guards against resetting on the
+# first poll, seconds after the command, before the car has reported anything).
+BOOSTED_GRACE_PERIOD = timedelta(minutes=3)
 
 # Delay before refreshing after an action
 ACTION_REFRESH_DELAY = 10
@@ -45,12 +49,20 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
         self._vehicle_ids: list[str] = config_entry.data.get(CONF_VEHICLES, [])
         self._vehicles: dict[str, Vehicle] = {}
 
-        refresh_interval = config_entry.data.get(
-            CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL
+        # Interval precedence: options -> data -> default (cast to int).
+        refresh_interval = int(
+            config_entry.options.get(
+                CONF_REFRESH_INTERVAL,
+                config_entry.data.get(
+                    CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL
+                ),
+            )
         )
         # 0 means disabled - set to None for no automatic polling
         self._normal_interval = timedelta(seconds=refresh_interval) if refresh_interval > 0 else None
         self._boosted_until: datetime | None = None
+        self._boost_started_at: datetime | None = None
+        self._boost_observed_active: bool = False
         self._last_updated: datetime | None = None
 
         super().__init__(
@@ -72,8 +84,13 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
             raise UpdateFailed(f"Error fetching vehicles: {err}") from err
 
     def start_boosted_polling(self) -> None:
-        """Start boosted polling interval for remote start monitoring."""
-        self._boosted_until = dt_util.utcnow() + BOOSTED_MAX_DURATION
+        """Start (or restart) boosted polling for remote start monitoring."""
+        now = dt_util.utcnow()
+        # Restarting the window resets the grace timer and observation state so
+        # a fresh remote start gets its own chance to be observed active.
+        self._boosted_until = now + BOOSTED_MAX_DURATION
+        self._boost_started_at = now
+        self._boost_observed_active = False
         self.update_interval = BOOSTED_INTERVAL
         _LOGGER.debug(
             "Boosted polling enabled until %s (interval: %s)",
@@ -82,7 +99,13 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
         )
 
     def _check_and_reset_boosted_polling(self, data: dict[str, VehicleStatus]) -> None:
-        """Check if boosted polling should be reset to normal."""
+        """Check if boosted polling should be reset to normal.
+
+        Only reset early if remote start was observed active at least once
+        during this boost window and has now gone inactive, OR the grace period
+        has elapsed with no active observation at all. The max-duration cap
+        always forces a reset.
+        """
         if self._boosted_until is None:
             return
 
@@ -94,20 +117,44 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
             self._reset_to_normal_polling()
             return
 
-        # Check if any vehicle still has remote starter active
+        # Check if any vehicle currently has remote starter active
         any_remote_active = any(
             status.remote_starter_active
             for status in data.values()
             if status.remote_starter_active is not None
         )
 
-        if not any_remote_active:
-            _LOGGER.debug("No vehicles have remote start active, resetting to normal polling")
+        if any_remote_active:
+            # Observed active - keep boosting and remember we saw it.
+            self._boost_observed_active = True
+            return
+
+        if self._boost_observed_active:
+            # Was active earlier this window, now inactive -> engine stopped.
+            _LOGGER.debug(
+                "Remote start went inactive after being observed active, "
+                "resetting to normal polling"
+            )
+            self._reset_to_normal_polling()
+            return
+
+        # Never observed active yet - wait out the grace period before giving up
+        # so we don't kill boosting before the car has reported anything.
+        if (
+            self._boost_started_at is not None
+            and now - self._boost_started_at >= BOOSTED_GRACE_PERIOD
+        ):
+            _LOGGER.debug(
+                "Grace period elapsed with no active remote start observed, "
+                "resetting to normal polling"
+            )
             self._reset_to_normal_polling()
 
     def _reset_to_normal_polling(self) -> None:
         """Reset polling interval to normal (may be None if disabled)."""
         self._boosted_until = None
+        self._boost_started_at = None
+        self._boost_observed_active = False
         self.update_interval = self._normal_interval
         if self._normal_interval is None:
             _LOGGER.debug("Polling interval reset to disabled (manual refresh only)")
@@ -125,12 +172,13 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
         return self._last_updated
 
     async def _async_update_data(self) -> dict[str, VehicleStatus]:
-        """Fetch data from API."""
-        try:
-            # Ensure we're authenticated
-            if not self.api.is_authenticated:
-                await self.api.authenticate()
+        """Fetch data from API.
 
+        The API layer now proactively refreshes expired tokens and retries once
+        after a 401, so a ViperAuthError reaching here means the credentials
+        were genuinely rejected -> escalate to HA's reauth flow.
+        """
+        try:
             data: dict[str, VehicleStatus] = {}
             errors: list[str] = []
 
@@ -138,22 +186,6 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
                 try:
                     status = await self.api.get_vehicle_status(vehicle_id)
                     data[vehicle_id] = status
-                except ViperAuthError:
-                    # Re-authenticate and retry once
-                    try:
-                        await self.api.authenticate()
-                        status = await self.api.get_vehicle_status(vehicle_id)
-                        data[vehicle_id] = status
-                    except (ViperAuthError, ViperApiError) as err:
-                        errors.append(f"Vehicle {vehicle_id}: {err}")
-                        # Preserve previous data if available
-                        if self.data and vehicle_id in self.data:
-                            data[vehicle_id] = self.data[vehicle_id]
-                            _LOGGER.warning(
-                                "Failed to update vehicle %s, keeping previous data: %s",
-                                vehicle_id,
-                                err,
-                            )
                 except ViperApiError as err:
                     errors.append(f"Vehicle {vehicle_id}: {err}")
                     # Preserve previous data if available
@@ -211,12 +243,13 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
         # Build model string from available info
         model_parts = []
         if vehicle:
+            # API may return ints for these; coerce so " ".join never raises.
             if vehicle.year:
-                model_parts.append(vehicle.year)
+                model_parts.append(str(vehicle.year))
             if vehicle.make:
-                model_parts.append(vehicle.make)
+                model_parts.append(str(vehicle.make))
             if vehicle.model:
-                model_parts.append(vehicle.model)
+                model_parts.append(str(vehicle.model))
 
         model = " ".join(model_parts) if model_parts else None
 
@@ -227,10 +260,22 @@ class ViperCoordinator(DataUpdateCoordinator[dict[str, VehicleStatus]]):
             "model": model,
         }
 
-    async def async_refresh_after_action(self) -> None:
-        """Schedule a refresh after an action with a delay."""
+    def schedule_refresh_after_action(self) -> None:
+        """Schedule a delayed refresh after an action (sync, unload-safe).
+
+        Uses the config entry's background task helper so the pending refresh is
+        cancelled if the entry is unloaded before the delay elapses.
+        """
         _LOGGER.debug(
             "Scheduling status refresh in %s seconds", ACTION_REFRESH_DELAY
         )
+        self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_refresh_after_action(),
+            name=f"{DOMAIN}_refresh_after_action",
+        )
+
+    async def _async_refresh_after_action(self) -> None:
+        """Wait the action delay then request a refresh."""
         await asyncio.sleep(ACTION_REFRESH_DELAY)
         await self.async_request_refresh()

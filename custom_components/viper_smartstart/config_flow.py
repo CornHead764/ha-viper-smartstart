@@ -8,7 +8,14 @@ from typing import Any
 import aiohttp
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigEntryState,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
@@ -36,6 +43,14 @@ class ViperSmartStartConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> ViperSmartStartOptionsFlow:
+        """Create the options flow."""
+        return ViperSmartStartOptionsFlow(config_entry)
+
     def __init__(self) -> None:
         """Initialize the config flow."""
         self._username: str | None = None
@@ -47,11 +62,11 @@ class ViperSmartStartConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step - authentication."""
-        _LOGGER.info("Viper SmartStart config flow started")
+        _LOGGER.debug("Viper SmartStart config flow started")
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            _LOGGER.info("Processing login attempt for user: %s", user_input.get(CONF_USERNAME))
+            _LOGGER.debug("Processing login attempt for user: %s", user_input.get(CONF_USERNAME))
             self._username = user_input[CONF_USERNAME]
             self._password = user_input[CONF_PASSWORD]
 
@@ -124,14 +139,14 @@ class ViperSmartStartConfigFlow(ConfigFlow, domain=DOMAIN):
         # Build vehicle options for selector
         vehicle_options = []
         for vehicle in self._vehicles:
-            label_parts = [vehicle.name]
+            label_parts = [str(vehicle.name)]
             extra_parts = []
             if vehicle.year:
-                extra_parts.append(vehicle.year)
+                extra_parts.append(str(vehicle.year))
             if vehicle.make:
-                extra_parts.append(vehicle.make)
+                extra_parts.append(str(vehicle.make))
             if vehicle.model:
-                extra_parts.append(vehicle.model)
+                extra_parts.append(str(vehicle.model))
             if extra_parts:
                 label_parts.append(f"({' '.join(extra_parts)})")
             vehicle_options.append({
@@ -204,7 +219,15 @@ class ViperSmartStartConfigFlow(ConfigFlow, domain=DOMAIN):
                             CONF_PASSWORD: user_input[CONF_PASSWORD],
                         },
                     )
-                    await self.hass.config_entries.async_reload(entry.entry_id)
+                    # When the entry is LOADED, async_update_entry fires the
+                    # options update listener registered in async_setup_entry,
+                    # which reloads it — so reloading here too would double up.
+                    # But that listener is only registered after setup fully
+                    # succeeds; if setup failed with ConfigEntryAuthFailed the
+                    # entry is not LOADED and nothing else will reload it, so we
+                    # must do it explicitly.
+                    if entry.state is not ConfigEntryState.LOADED:
+                        await self.hass.config_entries.async_reload(entry.entry_id)
                     return self.async_abort(reason="reauth_successful")
 
             except ViperAuthError:
@@ -221,4 +244,56 @@ class ViperSmartStartConfigFlow(ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
             description_placeholders={"username": self._username},
+        )
+
+
+class ViperSmartStartOptionsFlow(OptionsFlow):
+    """Handle options for Viper SmartStart."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        """Initialize the options flow.
+
+        Store the entry as ``self._entry`` rather than assigning
+        ``self.config_entry`` so this works from HA 2024.1 through current
+        (the ``config_entry`` setter is deprecated in newer HA).
+        """
+        self._entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(
+                data={
+                    CONF_REFRESH_INTERVAL: int(
+                        user_input[CONF_REFRESH_INTERVAL]
+                    ),
+                },
+            )
+
+        current_interval = self._entry.options.get(
+            CONF_REFRESH_INTERVAL,
+            self._entry.data.get(
+                CONF_REFRESH_INTERVAL, DEFAULT_REFRESH_INTERVAL
+            ),
+        )
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_REFRESH_INTERVAL, default=current_interval
+                    ): NumberSelector(
+                        NumberSelectorConfig(
+                            min=0,
+                            max=86400,
+                            step=60,
+                            unit_of_measurement="seconds",
+                            mode=NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
         )
