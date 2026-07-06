@@ -19,7 +19,7 @@ A Home Assistant custom integration for Viper SmartStart vehicle remote start sy
 
 **Important:** The Viper SmartStart API has a limit of approximately 5,000 calls per year. This integration defaults to **manual refresh only** to conserve your API quota. Each status poll uses 2 API calls.
 
-When choosing an automatic polling interval via **Settings → Devices & Services → Viper SmartStart → Configure**, consider: 3600 seconds ≈ 17,500 calls/year (exceeds quota); 14400 seconds ≈ 4,380 calls/year (safe). After remote start commands, the integration automatically refreshes status to verify the action.
+When choosing an automatic polling interval via **Settings** > **Devices & Services** > **Viper SmartStart** > **Configure**, consider: 3600 seconds ≈ 17,500 calls/year (exceeds quota); 14400 seconds ≈ 4,380 calls/year (safe). After remote start commands, the integration automatically refreshes status to verify the action.
 
 ## Installation
 
@@ -46,7 +46,7 @@ When choosing an automatic polling interval via **Settings → Devices & Service
 5. Select your vehicle(s)
 6. Set refresh interval (0 = manual only, recommended)
 
-You can change the refresh interval anytime via **Settings → Devices & Services → Viper SmartStart → Configure**. Session tokens are automatically refreshed before expiry to ensure commands remain available.
+You can change the refresh interval anytime via **Settings** > **Devices & Services** > **Viper SmartStart** > **Configure**. Session tokens are automatically refreshed before expiry to ensure commands remain available. If the API still returns an authentication error (401), the integration silently re-authenticates once and retries the request, so commands like remote start, lock, and unlock no longer fail when the session expires. Home Assistant's re-authentication prompt only appears when credentials are genuinely rejected (e.g. your password changed).
 
 ## Entities
 
