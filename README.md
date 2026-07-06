@@ -8,17 +8,18 @@ A Home Assistant custom integration for Viper SmartStart vehicle remote start sy
 
 ## Features
 
-- **Remote Start/Stop** - Start or stop your vehicle remotely
+- **Remote Start/Stop** - Start or stop your vehicle remotely; shows new state immediately after successful command
 - **Lock/Unlock** - Lock or unlock your vehicle doors
 - **Vehicle Status** - Monitor battery voltage, door status, ignition, trunk, and hood
 - **GPS Location** - Track your vehicle's location on the map
 - **Manual Refresh** - Refresh status on-demand to conserve API calls
+- **Command Failure Handling** - Command failures surface as errors visible in the UI and to automations
 
 ## API Rate Limits
 
-**Important:** The Viper SmartStart API has a limit of approximately 5,000 calls per year. This integration defaults to **manual refresh only** to conserve your API quota. Each status check uses 2 API calls (active + current status).
+**Important:** The Viper SmartStart API has a limit of approximately 5,000 calls per year. This integration defaults to **manual refresh only** to conserve your API quota. Each status poll uses 2 API calls.
 
-Automatic polling is available but should be used sparingly. After remote start commands, the integration automatically refreshes status to verify the action.
+When choosing an automatic polling interval via **Settings → Devices & Services → Viper SmartStart → Configure**, consider: 3600 seconds ≈ 17,500 calls/year (exceeds quota); 14400 seconds ≈ 4,380 calls/year (safe). After remote start commands, the integration automatically refreshes status to verify the action.
 
 ## Installation
 
@@ -43,7 +44,9 @@ Automatic polling is available but should be used sparingly. After remote start 
 3. Search for "Viper SmartStart"
 4. Enter your Viper SmartStart credentials
 5. Select your vehicle(s)
-6. Set refresh interval (0 = disabled, recommended)
+6. Set refresh interval (0 = manual only, recommended)
+
+You can change the refresh interval anytime via **Settings → Devices & Services → Viper SmartStart → Configure**. Session tokens are automatically refreshed before expiry to ensure commands remain available.
 
 ## Entities
 
