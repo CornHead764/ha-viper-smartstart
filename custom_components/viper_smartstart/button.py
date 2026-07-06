@@ -92,9 +92,7 @@ class ViperButton(CoordinatorEntity[ViperCoordinator], ButtonEntity):
         )
         if success:
             # Refresh data after command with delay
-            self.hass.async_create_task(
-                self.coordinator.async_refresh_after_action()
-            )
+            self.coordinator.schedule_refresh_after_action()
         else:
             _LOGGER.warning(
                 "Command %s failed for vehicle %s",

@@ -96,9 +96,7 @@ class ViperRemoteStartSwitch(CoordinatorEntity[ViperCoordinator], SwitchEntity):
             # Enable boosted polling to monitor remote start status
             self.coordinator.start_boosted_polling()
             # Refresh data after command with delay
-            self.hass.async_create_task(
-                self.coordinator.async_refresh_after_action()
-            )
+            self.coordinator.schedule_refresh_after_action()
         else:
             _LOGGER.warning("Remote start command failed for %s", self._vehicle_id)
 
@@ -123,8 +121,6 @@ class ViperRemoteStartSwitch(CoordinatorEntity[ViperCoordinator], SwitchEntity):
         success = await self.coordinator.api.remote_start(self._vehicle_id)
         if success:
             # Refresh data after command with delay
-            self.hass.async_create_task(
-                self.coordinator.async_refresh_after_action()
-            )
+            self.coordinator.schedule_refresh_after_action()
         else:
             _LOGGER.warning("Remote stop command failed for %s", self._vehicle_id)
